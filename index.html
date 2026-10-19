@@ -771,7 +771,6 @@
       if(effTs !== null){
         card.dataset.ts = String(effTs);
         card.dataset.hasTime = /\d{1,2}:\d{2}/.test(app.auctionDate) ? "1" : "0";
-        applyUrgency(card);
       }
       const canDelete = adminToken && app.sha;
       card.innerHTML =
@@ -792,6 +791,7 @@
             ? "<button type=\"button\" class=\"delete-link\" data-action=\"delete-start\" data-name=\"" + escapeHtml(app.name) + "\" data-sha=\"" + escapeHtml(app.sha) + "\">Xoá</button>"
             : (adminToken && !app.sha ? "<span class=\"confirm-text\">Bấm \"Làm mới\" để xoá được</span>" : "")) +
         "</div>";
+      if(card.dataset.ts) applyUrgency(card);
       return card;
     }
   }
@@ -808,12 +808,12 @@
   // Gắn (hoặc lấy lại) dòng phụ nằm ngay dưới tiêu đề thẻ
   function ensureLine(card, className){
     let line = card.querySelector("." + className);
-    if(!line){
+    if(!line && card.querySelector("h2")){
       line = document.createElement("div");
       line.className = className;
       card.querySelector("h2").insertAdjacentElement("afterend", line);
     }
-    return line;
+    return line || document.createElement("div");
   }
   function removeLine(card, className){
     const line = card.querySelector("." + className);

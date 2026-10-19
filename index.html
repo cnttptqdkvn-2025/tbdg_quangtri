@@ -261,6 +261,22 @@
     border-top:1px solid var(--line);
   }
   .card .dates-label{color:var(--ink-muted);}
+  /* Thông báo có phiên đấu giá còn dưới 7 ngày: tiêu đề chuyển sang màu đỏ */
+  .card.soon h2{color:var(--headline);}
+  .card .countdown{color:var(--headline);font-size:13px;font-weight:700;margin-top:-2px;}
+  /* Phiên đấu giá đã diễn ra: làm mờ nhẹ, rê chuột vào thì hiện rõ lại */
+  .card.past{opacity:0.62;transition:opacity 0.15s ease;}
+  .card.past:hover{opacity:1;}
+  .card .past-tag{
+    width:fit-content;
+    font-size:11.5px;
+    font-weight:600;
+    color:var(--ink-muted);
+    border:1px solid var(--line);
+    border-radius:2px;
+    padding:1px 8px;
+  }
+  @media (prefers-reduced-motion: reduce){ .card.past{transition:none;} }
   .card .auto-tag{
     font-style:italic;
     color:var(--ink-muted);
@@ -751,6 +767,12 @@
       const card = document.createElement("div");
       card.className = "card";
       card.dataset.name = app.name;
+      const effTs = effectiveAuctionTs(app);
+      if(effTs !== null){
+        card.dataset.ts = String(effTs);
+        card.dataset.hasTime = /\d{1,2}:\d{2}/.test(app.auctionDate) ? "1" : "0";
+        applyUrgency(card);
+      }
       const canDelete = adminToken && app.sha;
       card.innerHTML =
         (opts.showNewBadge && app._isNew ? '<span class="badge-new">Mới</span>' : "") +
@@ -774,6 +796,69 @@
     }
   }
 
+  // Mốc thời gian dùng để tính "còn lại bao lâu": ngày đấu giá không ghi giờ thì tính đến hết ngày đó
+  function effectiveAuctionTs(app){
+    const ts = parseAuctionTs(app.auctionDate);
+    if(ts === null) return null;
+    return ts + (/\d{1,2}:\d{2}/.test(app.auctionDate) ? 0 : 86399000);
+  }
+
+  // Còn dưới 7 ngày (và chưa diễn ra) thì đánh dấu thẻ để tiêu đề hiện màu đỏ
+  const URGENT_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+  // Gắn (hoặc lấy lại) dòng phụ nằm ngay dưới tiêu đề thẻ
+  function ensureLine(card, className){
+    let line = card.querySelector("." + className);
+    if(!line){
+      line = document.createElement("div");
+      line.className = className;
+      card.querySelector("h2").insertAdjacentElement("afterend", line);
+    }
+    return line;
+  }
+  function removeLine(card, className){
+    const line = card.querySelector("." + className);
+    if(line) line.remove();
+  }
+
+  // Ba trạng thái của thẻ theo thời gian đấu giá:
+  // còn dưới 7 ngày → tiêu đề đỏ + dòng "Còn X ngày"; đã diễn ra → làm mờ + nhãn "Đã diễn ra"; còn lại → bình thường
+  function applyUrgency(card){
+    const ts = Number(card.dataset.ts);
+    const remaining = ts - Date.now();
+    const soon = remaining > 0 && remaining < URGENT_WINDOW_MS;
+    const past = remaining <= 0;
+    card.classList.toggle("soon", soon);
+    card.classList.toggle("past", past);
+
+    if(soon){
+      ensureLine(card, "countdown").textContent = countdownText(ts, remaining, card.dataset.hasTime === "1");
+    } else {
+      removeLine(card, "countdown");
+    }
+    if(past){
+      ensureLine(card, "past-tag").textContent = "Đã diễn ra";
+    } else {
+      removeLine(card, "past-tag");
+    }
+  }
+
+  // "Còn X ngày": X là số ngày theo lịch từ hôm nay đến ngày đấu giá.
+  // Trong ngày đấu giá: có giờ thì hiện số giờ còn lại, không có giờ thì hiện "Diễn ra hôm nay".
+  function countdownText(ts, remaining, hasTime){
+    const startOf = function(t){ const d = new Date(t); d.setHours(0, 0, 0, 0); return d.getTime(); };
+    let days = Math.round((startOf(ts) - startOf(Date.now())) / 86400000);
+    if(days <= 0){
+      if(!hasTime) return "Diễn ra hôm nay";
+      const hours = Math.ceil(remaining / 3600000);
+      return hours <= 1 ? "Còn dưới 1 giờ" : "Còn " + hours + " giờ";
+    }
+    if(days >= 7) days = 6; // còn dưới 7 ngày nhưng giờ đấu giá sớm hơn giờ hiện tại → chưa đủ 7 ngày tròn
+    return "Còn " + days + " ngày";
+  }
+  function refreshUrgency(){
+    grid.querySelectorAll(".card[data-ts]").forEach(applyUrgency);
+  }
+
   // Phân tích chuỗi ngày đấu giá (vd "08:00, 11/10/2026" hoặc "24/10/2026") thành mốc thời gian
   function parseAuctionTs(str){
     if(!str) return null;
@@ -784,13 +869,19 @@
   }
 
   function groupByMonth(list){
+    const now = Date.now();
     const dated = [], undated = [];
     list.forEach(function(a){
       const ts = parseAuctionTs(a.auctionDate);
-      if(ts === null) undated.push(a); else dated.push({ app: a, ts: ts });
+      if(ts === null) undated.push(a); else dated.push({ app: a, ts: ts, eff: effectiveAuctionTs(a) });
     });
+    // Trong mỗi tháng: phiên sắp diễn ra xếp trước (số ngày còn lại ít nhất lên đầu);
+    // các phiên đã diễn ra xếp sau, phiên gần đây nhất trước.
     dated.sort(function(x, y){
-      return x.ts - y.ts || x.app.title.localeCompare(y.app.title, "vi");
+      const xUp = x.eff >= now, yUp = y.eff >= now;
+      if(xUp !== yUp) return xUp ? -1 : 1;
+      const diff = xUp ? x.eff - y.eff : y.eff - x.eff;
+      return diff || x.app.title.localeCompare(y.app.title, "vi");
     });
     undated.sort(function(a, b){ return a.title.localeCompare(b.title, "vi"); });
 
@@ -800,11 +891,12 @@
       const dt = new Date(item.ts);
       const key = dt.getFullYear() + "-" + dt.getMonth();
       if(!byKey[key]){
-        byKey[key] = { label: "Tháng " + (dt.getMonth() + 1) + "/" + dt.getFullYear(), items: [] };
+        byKey[key] = { label: "Tháng " + (dt.getMonth() + 1) + "/" + dt.getFullYear(), monthKey: dt.getFullYear() * 12 + dt.getMonth(), items: [] };
         groups.push(byKey[key]);
       }
       byKey[key].items.push(item.app);
     });
+    groups.sort(function(g1, g2){ return g1.monthKey - g2.monthKey; });
     if(undated.length){
       groups.push({ label: "Chưa xác định ngày đấu giá", items: undated });
     }
@@ -1010,6 +1102,9 @@
       if(w > 0) l.style.fontSize = (100 * available / w * 0.995).toFixed(2) + "px";
     });
   }
+  // Tự cập nhật màu cảnh báo theo thời gian thực, kể cả khi trang mở sẵn nhiều giờ
+  setInterval(refreshUrgency, 60 * 1000);
+
   fitHeadline();
   window.addEventListener("resize", fitHeadline);
   if(document.fonts){

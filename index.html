@@ -498,7 +498,10 @@
   /* ============================================================ */
 
   const CACHE_KEY = "auction-hub-cache:" + CONFIG.owner + "/" + CONFIG.repo + "/" + CONFIG.folder;
-  const CACHE_TTL_MS = 10 * 60 * 1000; // 10 phút
+  // Mỗi lần mở trang đều kiểm tra lại GitHub (tối thiểu cách nhau 5 giây); danh sách đã lưu chỉ dùng để hiện tức thì trong lúc chờ
+  const CACHE_TTL_MS = 5 * 1000;
+  // Tăng số này khi thay đổi cách đọc tiêu đề/ngày để buộc đọc lại thông tin các file đã lưu
+  const META_VERSION = 3;
 
   // Danh sách dự phòng — hiển thị khi chưa đồng bộ được với GitHub lần nào
   // (ví dụ mở file cục bộ, hoặc GitHub API tạm thời không phản hồi).
@@ -585,8 +588,10 @@
   // Tự nhận diện ngày/giờ gần một nhóm từ khóa, khi file không khai báo sẵn thẻ meta.
   // Đây là suy đoán theo mẫu câu thường gặp trong văn bản hành chính, KHÔNG phải đọc hiểu
   // văn bản thật sự — kết quả luôn được đánh dấu "tự động nhận diện" để người xem đối chiếu.
-  const AUCTION_KEYWORDS = ["tổ chức đấu giá", "thời gian đấu giá", "phiên đấu giá", "cuộc đấu giá", "công bố giá"];
-  const DEADLINE_KEYWORDS = ["hạn chót", "hạn cuối", "hạn nộp", "nộp hồ sơ", "tiền đặt trước", "chậm nhất", "trước"];
+  // "công bố giá" đứng đầu vì đây là tên gọi của phiên đấu giá trong các thông báo; không dùng các cụm quá chung
+  // (như "cuộc đấu giá", "tổ chức đấu giá") vì dễ khớp nhầm với ngày ban hành văn bản hoặc tên đơn vị đấu giá.
+  const AUCTION_KEYWORDS = ["công bố giá", "thời gian đấu giá", "thời gian tổ chức đấu giá", "ngày đấu giá"];
+  const DEADLINE_KEYWORDS = ["hạn chót", "hạn cuối", "hạn nộp", "chậm nhất", "nộp hồ sơ", "tiền đặt trước"];
   const DATETIME_RE = /(?:(\d{1,2})\s*(?:giờ|:|h)\s*(\d{0,2})\s*(?:phút)?\s*,?\s*(?:ngày)?\s*)?(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})/;
 
   function stripTags(html){
@@ -597,17 +602,27 @@
                .replace(/\s+/g, " ");
   }
 
+  // Với mỗi từ khóa, lấy ngày giờ NẰM GẦN từ khóa nhất (trước hoặc sau) trong vùng lân cận
   function findDateNearKeywords(plainText, keywords){
+    const lowerText = plainText.toLowerCase();
+    const globalRe = new RegExp(DATETIME_RE.source, "g");
     for(const kw of keywords){
       let fromIndex = 0;
-      const lowerText = plainText.toLowerCase();
       while(true){
         const idx = lowerText.indexOf(kw, fromIndex);
         if(idx === -1) break;
-        const windowText = plainText.slice(Math.max(0, idx - 60), idx + kw.length + 120);
-        const m = windowText.match(DATETIME_RE);
-        if(m){
-          const [, hh, mm, dd, mo, yyyy] = m;
+        const winStart = Math.max(0, idx - 80);
+        const windowText = plainText.slice(winStart, idx + kw.length + 120);
+        const kwStart = idx - winStart, kwEnd = kwStart + kw.length;
+        let best = null, bestDist = Infinity, m;
+        globalRe.lastIndex = 0;
+        while((m = globalRe.exec(windowText)) !== null){
+          const mStart = m.index, mEnd = m.index + m[0].length;
+          const dist = mEnd <= kwStart ? kwStart - mEnd : (mStart >= kwEnd ? mStart - kwEnd : 0);
+          if(dist < bestDist){ bestDist = dist; best = m; }
+        }
+        if(best){
+          const [, hh, mm, dd, mo, yyyy] = best;
           const datePart = dd.padStart(2, "0") + "/" + mo.padStart(2, "0") + "/" + yyyy;
           return hh ? (hh.padStart(2, "0") + ":" + (mm || "00").padStart(2, "0") + ", " + datePart) : datePart;
         }
@@ -661,13 +676,14 @@
     }
   }
 
-  async function loadFromGitHub(){
+  async function loadFromGitHub(previousApps){
     const apiUrl = "https://api.github.com/repos/" + CONFIG.owner + "/" + CONFIG.repo +
       "/contents/" + CONFIG.folder + "?ref=" + CONFIG.branch;
 
     const headers = { "Accept": "application/vnd.github+json" };
     if(adminToken) headers["Authorization"] = "Bearer " + adminToken;
-    const res = await fetch(apiUrl, { headers: headers });
+    // no-cache: luôn hỏi lại GitHub (phản hồi 304 không tính vào hạn mức), không dùng bản lưu tạm 60 giây của trình duyệt
+    const res = await fetch(apiUrl, { headers: headers, cache: "no-cache" });
 
     if(!res.ok){
       let reason = "Không thể kết nối tới GitHub (mã lỗi " + res.status + ").";
@@ -687,7 +703,19 @@
         it.name.toLowerCase() !== CONFIG.selfFilename.toLowerCase();
     });
 
+    const prevByName = {};
+    (previousApps || []).forEach(function(a){ prevByName[a.name] = a; });
+
     const withMeta = await Promise.all(htmlFiles.map(async function(f){
+      const prev = prevByName[f.name];
+      // File không đổi (cùng sha) và đã đọc bằng phiên bản hiện tại → dùng lại, không tải lại nội dung
+      if(prev && prev.sha === f.sha && prev.metaV === META_VERSION){
+        return {
+          name: f.name, title: prev.title, auctionDate: prev.auctionDate, deadline: prev.deadline,
+          auctionDateAuto: !!prev.auctionDateAuto, deadlineAuto: !!prev.deadlineAuto,
+          sha: f.sha, size: f.size, metaV: META_VERSION
+        };
+      }
       const meta = await fetchFileMeta(f.name);
       return {
         name: f.name,
@@ -697,7 +725,8 @@
         auctionDateAuto: !!meta.auctionDateAuto,
         deadlineAuto: !!meta.deadlineAuto,
         sha: f.sha,
-        size: f.size
+        size: f.size,
+        metaV: META_VERSION
       };
     }));
 
@@ -1050,7 +1079,7 @@
 
     setSyncState("pending", "Đang đồng bộ với kho GitHub…");
     try{
-      const fresh = await loadFromGitHub();
+      const fresh = await loadFromGitHub(allApps);
       const prevNames = new Set(allApps.map(function(a){ return a.name; }));
       fresh.forEach(function(a){ a._isNew = cached ? !prevNames.has(a.name) : false; });
 

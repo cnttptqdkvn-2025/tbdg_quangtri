@@ -20,6 +20,7 @@
     --accent-soft:#ececE6;
     --danger:#7a2e22;
     --headline:#c8102e;
+    --navy:#17306b;
     --danger-soft:#f1e4df;
     --success:#121212;
     --radius:2px;
@@ -44,6 +45,7 @@
       --accent-soft:#232321;
       --danger:#d99a8a;
       --headline:#ff6b6b;
+      --navy:#8fb0ff;
       --danger-soft:#2c211d;
       --success:#f0efe9;
       --shadow:none;
@@ -62,6 +64,7 @@
     --accent-soft:#232321;
     --danger:#d99a8a;
     --headline:#ff6b6b;
+    --navy:#8fb0ff;
     --danger-soft:#2c211d;
     --success:#f0efe9;
     --shadow:none;
@@ -263,6 +266,8 @@
   .card .dates-label{color:var(--ink-muted);}
   /* Thông báo có phiên đấu giá còn dưới 7 ngày: tiêu đề chuyển sang màu đỏ */
   .card.soon h2{color:var(--headline);}
+  /* Phiên đấu giá sắp tới nhưng chưa đến mức khẩn (còn từ 7 ngày trở lên): tiêu đề xanh navy */
+  .card.upcoming h2{color:var(--navy);}
   .card .countdown{color:var(--headline);font-size:13px;font-weight:700;margin-top:-2px;}
   /* Phiên đấu giá đã diễn ra: làm mờ nhẹ, rê chuột vào thì hiện rõ lại */
   .card.past{opacity:0.62;transition:opacity 0.15s ease;}
@@ -850,13 +855,16 @@
   }
 
   // Ba trạng thái của thẻ theo thời gian đấu giá:
-  // còn dưới 7 ngày → tiêu đề đỏ + dòng "Còn X ngày"; đã diễn ra → làm mờ + nhãn "Đã diễn ra"; còn lại → bình thường
+  // còn dưới 7 ngày → tiêu đề đỏ + dòng "Còn X ngày"; còn từ 7 ngày trở lên → tiêu đề xanh navy;
+  // đã diễn ra → làm mờ + nhãn "Đã diễn ra"
   function applyUrgency(card){
     const ts = Number(card.dataset.ts);
     const remaining = ts - Date.now();
     const soon = remaining > 0 && remaining < URGENT_WINDOW_MS;
     const past = remaining <= 0;
+    const upcoming = remaining >= URGENT_WINDOW_MS;
     card.classList.toggle("soon", soon);
+    card.classList.toggle("upcoming", upcoming);
     card.classList.toggle("past", past);
 
     if(soon){
